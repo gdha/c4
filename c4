@@ -31,11 +31,13 @@ typeset -r	SWLIST=/usr/sbin/swlist
 typeset -r	CONCLUSR=conclusr			# the cc user
 
 typeset -r	LOGFILE=/var/tmp/$PRGNAME-$(date '+%Y%m%d-%H%M').log
-typeset         TMPFILE1=/tmp/${PRGNAME}_1.$$
-typeset         TMPFILE2=/tmp/${PRGNAME}_2.$$
-typeset		CCCONPKG_FILE=/tmp/CCCONPKG_FILE.$$
-typeset		PRIMARY_CONF_FILE=/tmp/PRIMARY_CONF_FILE.$$
-typeset		RECOVERY_CONF_FILE=/tmp/RECOVERY_CONF_FILE.$$
+typeset		TMPDIR=$( mktemp -d /tmp -p ${PRGNAME}.$$ )
+typeset         TMPFILE1=$TMPDIR/${PRGNAME}_1.$$
+typeset         TMPFILE2=$TMPDIR/${PRGNAME}_2.$$
+typeset		CCCONFIG_FILE=$TMPDIR/CCCONFIG_FILE.$$
+typeset		CCCONPKG_FILE=$TMPDIR/CCCONPKG_FILE.$$
+typeset		PRIMARY_CONF_FILE=$TMPDIR/PRIMARY_CONF_FILE.$$
+typeset		RECOVERY_CONF_FILE=$TMPDIR/RECOVERY_CONF_FILE.$$
 
 #
 # Functions
@@ -63,6 +65,7 @@ function _note
 function _error
 {
 	printf " *** ERROR: $* \n"
+	_cleanup_tmp_files
 	exit 1
 }
 
@@ -1581,12 +1584,94 @@ function _find_and_print_x_lines
 	awk '/'"$1"'/ {p = '"$2"'} p > 0  {print $0; p--}' $3
 }
 
+function _cmp_banner
+{
+	printf "primary cluster: $PRIM_CL                                      recovery cluster: $REC_CL\n"
+	_line "~"
+}
+
+function _compare_general_parameters
+{
+	# compare the general cluster parameters between primary and recovery cluster
+	# input args: none
+	# output:
+	grep -v -E '(name=|^node|^package|node:|^id=|^cluster_formation_time|^coordinator|^logout)' \
+	$PRIMARY_CONF_FILE > $TMPFILE1
+	grep -v -E '(name=|^node|^package|node:|^id=|^cluster_formation_time|^coordinator|^logout)' \
+	$RECOVERY_CONF_FILE > $TMPFILE2
+	cmp -s $TMPFILE1 $TMPFILE2
+	if [[ $? -eq 1 ]]; then
+		_print 3 "==" "The general cluster parameters do not match between $PRIM_CL and $REC_CL" ; _nok
+		_cmp_banner
+		sdiff -s $TMPFILE1 $TMPFILE2
+	else
+		_print 3 "**" "The general cluster parameters match between $PRIM_CL and $REC_CL" ; _ok
+	fi
+}
+
+function _compare_node_parameters
+{
+	# it is the purpose to compare node1 from primary cluster with node1 from recovery cluster
+	# keep in mind that IP addresses will be different
+	# input args: none
+	# output:
+	# NODE contains the FQDN (the PRIMARY_CONF_FILE only contains the short hostname) -> ${NODE%%.*}
+	for NODE in $( echo ${PRIMARY_NODES[@]} )
+	do
+		# grep only lines starting with "node" and $(hostname) and remove "node:$(hostname)|" too
+		grep "^node" $PRIMARY_CONF_FILE | grep ${NODE%%.*} | cut -d'|' -f2- | \
+		grep -v -E '(node_pr_key|boot_timestamp|mac_address)' > $TMPDIR/${NODE%%.*}
+		# to be able to compare we have to remove (or change) the subnets of the node, e.g. subnet 10.0.208 vs. 10.0.210
+		# we grab the common subnet from the primary and replace the recovery subnet with the primary
+		#GDHA
+	done
+	for NODE in $( echo ${RECOVERY_NODES[@]} )
+	do
+		# grep only lines starting with "node" and $(hostname) and remove "node:$(hostname)|" too
+		grep "^node" $RECOVERY_CONF_FILE | grep ${NODE%%.*} | cut -d'|' -f2- | \
+		grep -v -E '(node_pr_key|boot_timestamp|mac_address)' > $TMPDIR/${NODE%%.*}
+	done
+	# now we have to compare node per equivalent node
+	i=0     # the first node name in array
+	count_prim_cl=${#PRIMARY_NODES[@]}  # amount of nodes in array
+	count_rec_cl=${#RECOVERY_NODES[@]}  # amount of nodes in array
+	if [[ $count_prim_cl -ne $count_rec_cl ]]; then
+		# TODO: should this become an _error?
+		_print 3 "==" "The amount of nodes between primary cluster ($count_prim_cl) and recovery cluster ($count_rec_cl) is not equal" ; _nok
+	fi
+	while [[ $i -le $count_prim_cl ]]
+	do
+		cmp -s $TMPDIR/${PRIMARY_NODES[$i]%%.*} $TMPDIR/${RECOVERY_NODES[$i]%%.*}
+		if [[ $? -eq 1 ]]; then
+			_print 3 "==" "Node ${PRIMARY_NODES[$i]%%.*} differs from ${RECOVERY_NODES[$i]%%.*}" ; _nok
+			_cmp_banner
+			sdiff -s $TMPDIR/${PRIMARY_NODES[$i]%%.*} $TMPDIR/${RECOVERY_NODES[$i]%%.*}
+		else
+			_print 3 "**" "Node ${PRIMARY_NODES[$i]%%.*} is equal to ${RECOVERY_NODES[$i]%%.*}" ; _ok
+		fi
+		i=$((i+1))
+	done
+	
+}
+
+function _cleanup_tmp_files
+{
+	rm -f $TMPFILE1 $CCCONPKG_FILE $TMPFILE2 $CCCONFIG_FILE
+}
+
+###############################################################################
 ###
 ### MAIN
 ###
+###############################################################################
 
 _whoami
 _banner "Continental Cluster Consistency Checks"
+
+# create the TMPDIR
+[[ -d $TMPDIR ]] && rm -rf $TMPDIR    # remove old TMPDIR
+mkdir -p $TMPDIR || _error "Could not create the temporary directory $TMPDIR"
+chmod 755 $TMPDIR
 
 ###############################################################################
 _check_continental_cluster_software
@@ -1597,11 +1682,11 @@ else
 fi
 
 ###############################################################################
-# do we have the cmviewconcl command present?
+# do we have the cmviewconcl command present? The $CCCONFIG_FILE will be used later
 type $CMVIEWCONCL >/dev/null 2>&1
 if [[ $? -eq 0 ]]; then
     _print 3 "**" "Collecting output of command $CMVIEWCONCL"
-    $CMVIEWCONCL >$TMPFILE1 2>&1
+    $CMVIEWCONCL >$CCCONFIG_FILE 2>&1
     if [[ $? -eq 0 ]]; then
         _ok
     else
@@ -1622,7 +1707,7 @@ fi
 
 ###############################################################################
 # show continental cluster name
-CC_NAME=$( grep "^CONTINENTAL CLUSTER" $TMPFILE1 | awk '{print $3,$4}' )
+CC_NAME=$( grep "^CONTINENTAL CLUSTER" $CCCONFIG_FILE | awk '{print $3,$4}' )
 if [[ ! -z "$CC_NAME" ]]; then
     _print 3 "**" "Continental Cluster name is $CC_NAME" ; _ok
 else
@@ -1631,8 +1716,8 @@ fi
 
 ###############################################################################
 # get names of primary and recovery cluster
-PRIM_CL=$( _find_and_print_x_lines "PRIMARY CLUSTER" 2 $TMPFILE1 | tail -1 | awk '{print $1}' )
-REC_CL=$( grep "RECOVERY CLUSTER" $TMPFILE1 | awk '{print $3}' )
+PRIM_CL=$( _find_and_print_x_lines "PRIMARY CLUSTER" 2 $CCCONFIG_FILE | tail -1 | awk '{print $1}' )
+REC_CL=$( grep "RECOVERY CLUSTER" $CCCONFIG_FILE | awk '{print $3}' )
 if [[ ! -z "$PRIM_CL" ]]; then
     _print 3 "**" "Primary cluster name is $PRIM_CL" ; _ok
 else
@@ -1675,6 +1760,7 @@ fi
 # run ssh connectivity tests towards all remotes nodes for the CONCLUSR user
 # Primary nodes & when successfull grab the output of the cluster running
 
+### TODO: must become a function
 for NODE in $( echo ${PRIMARY_NODES[@]} )
 do
     su - $CONCLUSR -c "ssh  -n -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=false -l $CONCLUSR $NODE  hostname" > $TMPFILE2 2>$TMPFILE2
@@ -1715,14 +1801,16 @@ do
     fi
 done
 
+
 ###############################################################################
 # Check if we have a valid cluster configuration overview of the primary site
+### TODO: make a function for this
 if [[ -f $PRIMARY_CONF_FILE ]]; then
     # we will first remove the login banner from the cmviewcl output
-    cat $PRIMARY_CONF_FILE | \
-    awk "/name=$PRIM_CL/,/logout/ {if (\$0 !~ "name=$PRIM_CL" && \$0 !~ "logout") print}" \
-    > $TMPFILE2
-    cp $TMPFILE2 $PRIMARY_CONF_FILE
+    #cat $PRIMARY_CONF_FILE | \
+    #awk "/name=$PRIM_CL/,/logout/ {if (\$0 !~ "name=$PRIM_CL" && \$0 !~ "logout") print}" \
+    #> $TMPFILE2
+    #cp $TMPFILE2 $PRIMARY_CONF_FILE
     # verify if the output makes sense by grepping "network_failure_detection" string (as
     # we are sure this must be in there)
     grep -q "network_failure_detection" $PRIMARY_CONF_FILE
@@ -1740,10 +1828,10 @@ fi
 # Check if we have a valid cluster configuration overview of the recovery site
 if [[ -f $RECOVERY_CONF_FILE ]]; then
     # we will first remove the login banner from the cmviewcl output
-    cat $RECOVERY_CONF_FILE | \
-    awk "/name=$REC_CL/,/logout/ {if (\$0 !~ "name=$REC_CL" && \$0 !~ "logout") print}" \
-    > $TMPFILE2
-    cp $TMPFILE2 $RECOVERY_CONF_FILE
+    #cat $RECOVERY_CONF_FILE | \
+    #awk "/name=$REC_CL/,/logout/ {if (\$0 !~ "name=$REC_CL" && \$0 !~ "logout") print}" \
+    #> $TMPFILE2
+    #cp $TMPFILE2 $RECOVERY_CONF_FILE
     # verify if the output makes sense by grepping "network_failure_detection" string (as
     # we are sure this must be in there)
     grep -q "network_failure_detection" $RECOVERY_CONF_FILE
@@ -1757,9 +1845,22 @@ else
     _error "The configuration of cluster $REC_CL was not created??"
 fi
 
+###############################################################################
+# Start comparing the primary and recovery cluster configuration
+# part: general parameters
+_compare_general_parameters
+
+###############################################################################
+# Start comparing the node parameters
+# part: node paramaters
+_compare_node_parameters
+
+
+
 
 # 
 # The End and cleanup
 #
-rm -f $TMPFILE1 $CCCONPKG_FILE $TMPFILE2
+_cleanup_tmp_files
+#rm -rf $TMPDIR
 exit $rc
