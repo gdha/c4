@@ -387,6 +387,7 @@ function _compare_general_parameters
 	else
 		_print 3 "**" "The general cluster parameters match between $PRIM_CL and $REC_CL" ; _ok
 	fi
+	echo
 }
 
 function _compare_node_parameters
@@ -493,6 +494,10 @@ function _compare_package_of_group
 	GROUP="$1"
 	# give the file a prefix "group_" as group name can be anything
 	_find_and_print_x_lines "$GROUP" 5 $CCCONFIG_FILE > "$TMPDIR/group_$GROUP"
+	_note "Start analyzing package recovery group \"$GROUP\""
+	_line "*"
+	cat "$TMPDIR/group_$GROUP"
+	echo
 	# PACKAGE RECOVERY GROUP  Group001
 	#
 	#    PACKAGE                           ROLE           STATUS
@@ -501,6 +506,84 @@ function _compare_package_of_group
 	PACKAGENAME=$( tail -1 $TMPDIR/group_$GROUP | awk '{print $1}' | cut -d"/" -f2 )
 	grep "^package:${PACKAGENAME}" $PRIMARY_CONF_FILE  > "$TMPDIR/pkg_${PACKAGENAME}_PRIM"
 	grep "^package:${PACKAGENAME}" $RECOVERY_CONF_FILE > "$TMPDIR/pkg_${PACKAGENAME}_REC"
+
+	_filter_package_output_of "$TMPDIR/pkg_${PACKAGENAME}_PRIM" 0
+	_filter_package_output_of "$TMPDIR/pkg_${PACKAGENAME}_REC"  1
+
+	cmp -s "$TMPDIR/pkg_${PACKAGENAME}_PRIM" "$TMPDIR/pkg_${PACKAGENAME}_REC"
+	if [[ $? -eq 1 ]]; then
+		_print 3 "==" "Package ${PACKAGENAME} differs between primary and recovery cluster" ; _nok
+		_cmp_banner
+		sdiff -s "$TMPDIR/pkg_${PACKAGENAME}_PRIM" "$TMPDIR/pkg_${PACKAGENAME}_REC"
+	else
+		_print 3 "**" "Package ${PACKAGENAME} is exactly the same between primary and recovery cluster" ; _ok
+	fi
+	echo
+}
+
+function _filter_package_output_of
+{
+	# purpose of function is to remove lines from the pkg_${PACKAGENAME}_<PRIM|REC> file
+	# so it becomes easier to compare them
+	# input: pkg_${PACKAGENAME}_<PRIM|REC> file, arg2: trigger (1) to replace nodenames, IPs
+	# output: pkg_${PACKAGENAME}_<PRIM|REC> file rewritten
+
+	# first we remove "package:<PACKAGENAME>|" from input stream and some keywords
+	cat $1 | cut -d'|' -f2- | grep -v -E '(^name=|^owner=|^id=|^ip_address:|^summary=)' | \
+	grep -v -E '(last_run_time=|last_halt_time=|status=|state=|available=|pid=|restart_limit=)' | \
+	rmnl | ssp > ${1}.new
+	mv -f ${1}.new ${1}
+
+	if [[ $2 -eq 0 ]]; then
+		# grab the PKG_PRIM_IP from package file; as prim cluster may not be the active one use subnet line
+		i=0
+		grep ^ip_subnet ${1} | grep ip_address | while read LINE
+		do
+			PKG_PRIM_IP[$i]=$( echo $LINE | cut -d= -f2 )
+			i=$(( i + 1 ))
+		done
+		
+
+		return   # we will not change nodes names nor IP addresses in recovery package file
+	fi
+
+	# $2=1 => recovery package file
+	i=0
+	grep ^ip_subnet ${1} | grep ip_address | while read LINE
+	do
+		PKG_REC_IP[$i]=$( echo $LINE | cut -d= -f2 )
+		i=$(( i + 1 ))
+	done
+
+	i=0
+	while [[ $i -le ${#RECOVERY_NODES[@]} ]]
+	do
+		NODE_PRIM=${PRIMARY_NODES[i]%%.*}  # use the short primary hostname
+		NODE_REC=${RECOVERY_NODES[i]%%.*}  # use the short primary hostname
+		sed -e "s/$NODE_REC/$NODE_PRIM/g" < ${1} > ${1}.new
+		mv -f ${1}.new ${1}
+		i=$(( i + 1 ))
+	done
+
+	# to be able to compare we will replace the recovery node IP addresses (REC_IPs) with the PRIM_IPs
+	i=0
+	while [[ $i -le ${#REC_IP[@]} ]]
+	do
+		sed -e "s/${REC_IP[i]}/${PRIM_IP[i]}/g" -e "s/${REC_NM[i]}/${PRIM_NM[i]}/g" \
+		-e "s/${REC_SN[i]}/${PRIM_SN[i]}/g" -e "s/${REC_GW}/${PRIM_GW}/g" \
+		< ${1} > ${1}.new
+		mv -f ${1}.new ${1}
+		i=$(( i + 1 ))
+	done
+
+	# for SAP webdispatchers multiple IP addresses may be defined
+	i=0
+	while [[ $i -le ${#PKG_REC_IP[@]} ]]
+	do
+		sed -e "s/${PKG_REC_IP[i]}/${PKG_PRIM_IP[i]}/g" < ${1} > ${1}.new
+		mv -f ${1}.new ${1}
+		i=$(( i + 1 ))
+	done
 }
 
 function _cleanup_tmp_files
