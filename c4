@@ -413,10 +413,18 @@ function _compare_node_parameters
 		# to be able to compare we have to remove (or change) the subnets of the node, e.g. subnet 10.0.208 vs. 10.0.210
 		grep ip_address $TMPDIR/${NODE%%.*} | while read LINE
 		do
-			echo $LINE | grep -q "name=" && PRIM_IP[$j]=$( echo $LINE | grep "name=" | cut -d= -f2 )
-			echo $LINE | grep -q "netmask=" && PRIM_NM[$j]=$( echo $LINE | grep "netmask=" | cut -d= -f2 )
+			echo $LINE | grep -q "name=" && {
+				PRIM_IP[$j]=$( echo $LINE | grep "name=" | cut -d= -f2 )
+				printf "${NODE%%.*}: ${PRIM_IP[j]}/" >> $TMPDIR/${NODE%%.*}.IPs
+				}
+			echo $LINE | grep -q "netmask=" && {
+				PRIM_NM[$j]=$( echo $LINE | grep "netmask=" | cut -d= -f2 )
+				printf "$( _get_network_address ${PRIM_IP[j]} ${PRIM_NM[j]} ) " >> $TMPDIR/${NODE%%.*}.IPs
+				}
 			echo $LINE | grep -q "subnet=" && {
 				PRIM_SN[$j]=$( echo $LINE | grep "subnet=" | cut -d= -f2 )
+				PRIM_HP[$j]=$(( $(_ip2num ${PRIM_IP[j]}) - $(_ip2num ${PRIM_SN[j]}) ))
+				printf " host-part=${PRIM_HP[j]}\n" >> $TMPDIR/${NODE%%.*}.IPs
 				# after subnet line we may increase of index j
 				j=$(( j + 1 ))
 				}
@@ -433,10 +441,18 @@ function _compare_node_parameters
 		grep -v -E '(node_pr_key|boot_timestamp|mac_address)' > $TMPDIR/${NODE%%.*}
 		grep ip_address $TMPDIR/${NODE%%.*} | while read LINE
 		do
-			echo $LINE | grep -q "name=" && REC_IP[$j]=$( echo $LINE | grep "name=" | cut -d= -f2 )
-			echo $LINE | grep -q "netmask=" && REC_NM[$j]=$( echo $LINE | grep "netmask=" | cut -d= -f2 )
+			echo $LINE | grep -q "name=" && {
+				REC_IP[$j]=$( echo $LINE | grep "name=" | cut -d= -f2 )
+				printf "${NODE%%.*}: ${REC_IP[j]}/" >> $TMPDIR/${NODE%%.*}.IPs
+				}
+			echo $LINE | grep -q "netmask=" && {
+				REC_NM[$j]=$( echo $LINE | grep "netmask=" | cut -d= -f2 )
+				printf "$(  _get_network_address ${REC_IP[j]} ${REC_NM[j]} ) " >> $TMPDIR/${NODE%%.*}.IPs
+				}
 			echo $LINE | grep -q "subnet=" && {
 				REC_SN[$j]=$( echo $LINE | grep "subnet=" | cut -d= -f2 )
+				REC_HP[$j]=$(( $(_ip2num ${REC_IP[j]}) - $(_ip2num ${REC_SN[j]}) ))
+				printf " host-part=${REC_HP[j]}\n" >> $TMPDIR/${NODE%%.*}.IPs
 				# after subnet line we may increase of index j
 				j=$(( j + 1 ))
 				}
@@ -446,15 +462,36 @@ function _compare_node_parameters
 	done
 	REC_GW=$( grep subnet $TMPDIR/${NODE%%.*} | grep polling_target | cut -d= -f2 )
 
-	# to be able to compare we will replace the recovery node IP addresses (REC_IPs) with the PRIM_IPs
-	count=${#REC_IP[@]}	# count the elements in array
+	# to be able to compare we will replace the node IP addresses with the unique host-part
 	i=0
-	while [[ $i -le $count ]]
+	while [[ $i -le ${#PRIM_IP[@]} ]]
+	do
+		for NODE in $( echo ${PRIMARY_NODES[@]} )
+		do
+			IP_HP=$(( $(_ip2num ${PRIM_IP[i]}) - $(_ip2num ${PRIM_SN[i]}) ))
+			SN_HP=$(( $(_ip2num ${PRIM_SN[i]}) - $(_ip2num ${PRIM_SN[i]}) ))    # should always be 0
+			NM_HP=$(( $(_ip2num ${PRIM_NM[i]}) - $(_ip2num ${PRIM_NM[i]}) ))    # should always be 0
+			GW_HP=$(( $(_ip2num ${PRIM_GW}) - $(_ip2num ${PRIM_SN[i]}) ))
+
+			sed -e "s/${PRIM_IP[i]}/${IP_HP}/g" -e "s/${PRIM_NM[i]}/${NM_HP}/g" \
+			-e "s/${PRIM_SN[i]}/${SN_HP}/g" -e "s/${PRIM_GW}/${GW_HP}/g" \
+			< $TMPDIR/${NODE%%.*} >$TMPDIR/${NODE%%.*}-tmp
+			mv $TMPDIR/${NODE%%.*}-tmp $TMPDIR/${NODE%%.*}
+		done
+		i=$(( i + 1 ))
+	done
+	i=0
+	while [[ $i -le ${#REC_IP[@]} ]]
 	do
 		for NODE in $( echo ${RECOVERY_NODES[@]} )
 		do
-			sed -e "s/${REC_IP[i]}/${PRIM_IP[i]}/g" -e "s/${REC_NM[i]}/${PRIM_NM[i]}/g" \
-			-e "s/${REC_SN[i]}/${PRIM_SN[i]}/g" -e "s/${REC_GW}/${PRIM_GW}/g" \
+			IP_HP=$(( $(_ip2num ${REC_IP[i]}) - $(_ip2num ${REC_SN[i]}) ))
+			SN_HP=$(( $(_ip2num ${REC_SN[i]}) - $(_ip2num ${REC_SN[i]}) ))    # should always be 0
+			NM_HP=$(( $(_ip2num ${REC_NM[i]}) - $(_ip2num ${REC_NM[i]}) ))    # should always be 0
+			GW_HP=$(( $(_ip2num ${REC_GW}) - $(_ip2num ${REC_SN[i]}) ))
+
+			sed -e "s/${REC_IP[i]}/${IP_HP}/g" -e "s/${REC_NM[i]}/${NM_HP}/g" \
+			-e "s/${REC_SN[i]}/${SN_HP}/g" -e "s/${REC_GW}/${GW_HP}/g" \
 			< $TMPDIR/${NODE%%.*} >$TMPDIR/${NODE%%.*}-tmp
 			mv $TMPDIR/${NODE%%.*}-tmp $TMPDIR/${NODE%%.*}
 		done
@@ -494,6 +531,7 @@ function _compare_package_of_group
 	GROUP="$1"
 	# give the file a prefix "group_" as group name can be anything
 	_find_and_print_x_lines "$GROUP" 5 $CCCONFIG_FILE > "$TMPDIR/group_$GROUP"
+	_line "*"
 	_note "Start analyzing package recovery group \"$GROUP\""
 	_line "*"
 	cat "$TMPDIR/group_$GROUP"
@@ -519,6 +557,18 @@ function _compare_package_of_group
 		_print 3 "**" "Package ${PACKAGENAME} is exactly the same between primary and recovery cluster" ; _ok
 	fi
 	echo
+	grep -q "initial_autorun=disabled" "$TMPDIR/pkg_${PACKAGENAME}_PRIM"
+	if [[ $? -eq 0 ]]; then
+		_print 3 "**" "Package ${PACKAGENAME} setting of initial_autorun=disabled [$PRIM_CL]" ; _ok
+	else
+		_print 3 "==" "Package ${PACKAGENAME} setting of initial_autorun=disabled [$PRIM_CL]" ; _nok
+	fi
+	grep -q "initial_autorun=disabled" "$TMPDIR/pkg_${PACKAGENAME}_REC"
+	if [[ $? -eq 0 ]]; then
+		_print 3 "**" "Package ${PACKAGENAME} setting of initial_autorun=disabled [$REC_CL]" ; _ok
+	else
+		_print 3 "==" "Package ${PACKAGENAME} setting of initial_autorun=disabled [$REC_CL]" ; _nok
+	fi
 }
 
 function _filter_package_output_of
@@ -530,66 +580,116 @@ function _filter_package_output_of
 
 	# first we remove "package:<PACKAGENAME>|" from input stream and some keywords
 	cat $1 | cut -d'|' -f2- | grep -v -E '(^name=|^owner=|^id=|^ip_address:|^summary=)' | \
-	grep -v -E '(last_run_time=|last_halt_time=|status=|state=|available=|pid=|restart_limit=)' | \
+	grep -v -E '(last_run_time=|last_halt_time=|last_halt_failed=|status=|state=|available=|pid=|restart_limit=)' | \
 	rmnl | ssp > ${1}.new
 	mv -f ${1}.new ${1}
 
-	if [[ $2 -eq 0 ]]; then
-		# grab the PKG_PRIM_IP from package file; as prim cluster may not be the active one use subnet line
-		i=0
-		grep ^ip_subnet ${1} | grep ip_address | while read LINE
-		do
-			PKG_PRIM_IP[$i]=$( echo $LINE | cut -d= -f2 )
-			i=$(( i + 1 ))
-		done
-		
+	# we will replace all IP addresses with their unique host-part - makes it easy to compare
+	IP_SUBNET=$(  grep ^ip_subnet ${1} | grep ip_subnet= | cut -d= -f2 )
 
-		return   # we will not change nodes names nor IP addresses in recovery package file
-	fi
-
-	# $2=1 => recovery package file
+	# grab the PKG_IP from package file; as prim cluster may not be the active one use subnet line
 	i=0
 	grep ^ip_subnet ${1} | grep ip_address | while read LINE
 	do
-		PKG_REC_IP[$i]=$( echo $LINE | cut -d= -f2 )
+		PKG_IP[$i]=$( echo $LINE | cut -d= -f2 )
+		PKG_HP[$i]=$(( $(_ip2num ${PKG_IP[i]}) - $(_ip2num ${IP_SUBNET}) ))
 		i=$(( i + 1 ))
 	done
 
-	i=0
-	while [[ $i -le ${#RECOVERY_NODES[@]} ]]
-	do
-		NODE_PRIM=${PRIMARY_NODES[i]%%.*}  # use the short primary hostname
-		NODE_REC=${RECOVERY_NODES[i]%%.*}  # use the short primary hostname
-		sed -e "s/$NODE_REC/$NODE_PRIM/g" < ${1} > ${1}.new
-		mv -f ${1}.new ${1}
-		i=$(( i + 1 ))
-	done
+	if [[ $2 -eq 0 ]]; then
+		# collect the HORCMINST nr of primary cluster package group (should be the same for all primary pkgs)
+		PRIM_HORCMINST=$( grep HORCMINST ${1} | cut -d= -f2 )
+	else
+		# recovery packagroup file
+		REC_HORCMINST=$( grep HORCMINST ${1} | cut -d= -f2 )
+
+		i=0
+		while [[ $i -le ${#RECOVERY_NODES[@]} ]]
+		do
+			NODE_PRIM=${PRIMARY_NODES[i]%%.*}  # use the short primary hostname
+			NODE_REC=${RECOVERY_NODES[i]%%.*}  # use the short primary hostname
+			sed -e "s/$NODE_REC/$NODE_PRIM/g" \
+			-e "s/HORCMINST=${REC_HORCMINST}/HORCMINST=${PRIM_HORCMINST}/g" \
+			-e "s/horcmperm${REC_HORCMINST}/horcmperm${PRIM_HORCMINST}/g"  < ${1} > ${1}.new
+			mv -f ${1}.new ${1}
+			i=$(( i + 1 ))
+		done
+	fi
 
 	# to be able to compare we will replace the recovery node IP addresses (REC_IPs) with the PRIM_IPs
 	i=0
-	while [[ $i -le ${#REC_IP[@]} ]]
-	do
-		sed -e "s/${REC_IP[i]}/${PRIM_IP[i]}/g" -e "s/${REC_NM[i]}/${PRIM_NM[i]}/g" \
-		-e "s/${REC_SN[i]}/${PRIM_SN[i]}/g" -e "s/${REC_GW}/${PRIM_GW}/g" \
-		< ${1} > ${1}.new
-		mv -f ${1}.new ${1}
-		i=$(( i + 1 ))
-	done
+	if [[ $2 -eq 0 ]]; then
+		while [[ $i -le ${#PRIM_IP[@]} ]]
+		do
+			IP_HP=$(( $(_ip2num ${PRIM_IP[i]}) - $(_ip2num ${IP_SUBNET}) ))
+			SN_HP=$(( $(_ip2num ${PRIM_SN[i]}) - $(_ip2num ${IP_SUBNET}) ))    # should always be 0
+			NM_HP=$(( $(_ip2num ${PRIM_NM[i]}) - $(_ip2num ${IP_SUBNET}) ))
+			GW_HP=$(( $(_ip2num ${PRIM_GW}) - $(_ip2num ${IP_SUBNET}) ))
+			sed -e "s/${PRIM_IP[i]}/${IP_HP}/g" -e "s/${PRIM_NM[i]}/${NM_HP}/g" \
+			-e "s/${PRIM_SN[i]}/${SN_HP}/g" -e "s/${PRIM_GW}/${GW_HP}/g" \
+			< ${1} > ${1}.new
+			mv -f ${1}.new ${1}
+			i=$(( i + 1 ))
+		done
+	else
+		while [[ $i -le ${#REC_IP[@]} ]]
+		do
+			IP_HP=$(( $(_ip2num ${REC_IP[i]}) - $(_ip2num ${IP_SUBNET}) ))
+			SN_HP=$(( $(_ip2num ${REC_SN[i]}) - $(_ip2num ${IP_SUBNET}) ))    # should always be 0
+			NM_HP=$(( $(_ip2num ${REC_NM[i]}) - $(_ip2num ${IP_SUBNET}) ))
+			GW_HP=$(( $(_ip2num ${REC_GW}) - $(_ip2num ${IP_SUBNET}) ))
+			sed -e "s/${REC_IP[i]}/${IP_HP}/g" -e "s/${REC_NM[i]}/${NM_HP}/g" \
+			-e "s/${REC_SN[i]}/${SN_HP}/g" -e "s/${REC_GW}/${GW_HP}/g" \
+			< ${1} > ${1}.new
+			mv -f ${1}.new ${1}
+			i=$(( i + 1 ))
+		done
+	fi
 
 	# for SAP webdispatchers multiple IP addresses may be defined
 	i=0
-	while [[ $i -le ${#PKG_REC_IP[@]} ]]
+	while [[ $i -le ${#PKG_IP[@]} ]]
 	do
-		sed -e "s/${PKG_REC_IP[i]}/${PKG_PRIM_IP[i]}/g" < ${1} > ${1}.new
+		sed -e "s/${PKG_IP[i]}/${PKG_HP[i]}/g" < ${1} > ${1}.new
 		mv -f ${1}.new ${1}
 		i=$(( i + 1 ))
 	done
+}
+
+function _show_nodes_IP_addresses
+{
+	# purpose is to show an overview of the nodes IP addresses
+	# input args: none
+	# output : inside this function
+	_note "Overview of the IP addresses/CIDR per node"
+	_line "*"
+	_note "Primary Cluster $PRIM_CL nodes are:"
+	i=0
+	while [[ $i -le ${#PRIMARY_NODES[@]} ]]
+	do
+		if [[ -f $TMPDIR/${PRIMARY_NODES[i]%%.*}.IPs ]]; then
+			cat $TMPDIR/${PRIMARY_NODES[i]%%.*}.IPs
+		fi
+		i=$(( i + 1 ))
+	done
+	echo
+	_note "Recovery Cluster $REC_CL nodes are:"
+	i=0
+	while [[ $i -le ${#RECOVERY_NODES[@]} ]]
+	do
+		if [[ -f $TMPDIR/${RECOVERY_NODES[i]%%.*}.IPs ]]; then
+			cat $TMPDIR/${RECOVERY_NODES[i]%%.*}.IPs
+		fi
+		i=$(( i + 1 ))
+	done
+	echo
 }
 
 function _cleanup_tmp_files
 {
 	rm -f $TMPFILE1 $CCCONPKG_FILE $TMPFILE2 $CCCONFIG_FILE
 	rm -f /tmp/_check_nslookup_address.txt
+	rm -rf $TMPDIR
 }
 
 ###############################################################################
@@ -816,6 +916,10 @@ _compare_general_parameters
 # part: node paramaters
 _compare_node_parameters
 
+
+###############################################################################
+# display the nodes IPs
+_show_nodes_IP_addresses
 
 ###############################################################################
 # part: go over the package groups
