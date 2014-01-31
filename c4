@@ -38,6 +38,7 @@ typeset		CCCONFIG_FILE=$TMPDIR/CCCONFIG_FILE.$$
 typeset		CCCONPKG_FILE=$TMPDIR/CCCONPKG_FILE.$$
 typeset		PRIMARY_CONF_FILE=$TMPDIR/PRIMARY_CONF_FILE.$$
 typeset		RECOVERY_CONF_FILE=$TMPDIR/RECOVERY_CONF_FILE.$$
+typeset		mailto="gdhaese1@its.jnj.com,pmertens@its.jnj.com,lgielen1@its.jnj.com"
 
 #
 # Functions
@@ -93,6 +94,12 @@ function _skip
 function _warn
 {
 	echo "[ WARN ]"
+}
+
+function _mail
+{
+	[ -s "$LOGFILE" ] || LOGFILE=/dev/null
+	expand "$LOGFILE" | mailx -s "$*" $mailto
 }
 
 function _askYN
@@ -151,6 +158,7 @@ function _banner
 	$(_print 22 "Host:" "$HOSTNAME")
 	$(_print 22 "User:" "$(whoami)")
 	$(_print 22 "Date:" "$(date +'%Y-%m-%d @ %H:%M:%S')")
+	$(_print 22 "Log:" "$LOGFILE")
 	$(_line "#")
 	EOD
 }
@@ -698,6 +706,7 @@ function _cleanup_tmp_files
 ###
 ###############################################################################
 
+{  # as wrapper to log everything into $LOGFILE
 _whoami
 _banner "Continental Cluster Consistency Checks"
 _validOS
@@ -928,9 +937,42 @@ do
 	_compare_package_of_group $GROUP
 done
 
+# write ERRcode to file (as we would loose it after next }!)
+echo $ERRcode > /tmp/ERRcode.c4
+
+} 2>&1 | tee $LOGFILE # tee is used in case of interactive run
+
+#
+# Picking up ERRcode and do mail handling
+#
+#  check error count
+if [[  -f /tmp/ERRcode.c4 ]] ; then
+	# now we can do proper error handling
+	ERRcode=$(cat /tmp/ERRcode.c4)
+	if [[ $ERRcode -eq 0 ]]; then
+		echo | tee -a $LOGFILE
+		_print 3 "**" "GREAT JOB - no errors found in our Continental Cluster setup" | tee -a $LOGFILE
+		_ok | tee -a $LOGFILE
+	else
+		echo | tee -a $LOGFILE
+		_print 3 "==" "Errors found in our Continental Cluster setup" | tee -a $LOGFILE
+		_nok | tee -a $LOGFILE
+	fi
+fi
+
+_line "+" | tee -a $LOGFILE
+_note "$(date '+%d-%m-%Y %H:%M:%S') - Log file is saved as $LOGFILE" | tee -a $LOGFILE
+_line "+" | tee -a $LOGFILE
+
+CC_NAME=$( grep "^CONTINENTAL CLUSTER" $CCCONFIG_FILE | awk '{print $3,$4}' )
+if [[ $ERRcode -eq 0 ]]; then
+	_mail "[SUCCESS] Results of Continental Cluster [$CC_NAME] Configuration Checks"
+else
+	_mail "[FAILURE] Results of Continental Cluster [$CC_NAME] Configuration Checks"
+fi
+
 # 
 # The End and cleanup
 #
 _cleanup_tmp_files
-#rm -rf $TMPDIR
-exit $rc
+exit $ERRcode
