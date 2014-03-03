@@ -697,7 +697,61 @@ function _cleanup_tmp_files
 {
 	rm -f $TMPFILE1 $CCCONPKG_FILE $TMPFILE2 $CCCONFIG_FILE
 	rm -f /tmp/_check_nslookup_address.txt
-	rm -rf $TMPDIR
+	##gdha##rm -rf $TMPDIR
+}
+
+function _ssh_test_conclusr
+{
+    typeset node="$1"
+    typeset conf_file="$2"
+    typeset name_cl="$3"
+    su - $CONCLUSR -c "ssh  -n -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=false -l $CONCLUSR $node  hostname" > $TMPFILE2 2>$TMPFILE2
+    if [[ $? -eq 0 ]]; then
+        _print 3 "**" "User $CONCLUSR can execute commands on node $node" ; _ok
+        # ssh works so now we can collect the output from cmviewcl -v via $CONCLUSR
+        su - $CONCLUSR -c "ssh -q -n -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=false \
+        -l $CONCLUSR $node /usr/sbin/cmviewcl -f line -v" > "$conf_file" 2>/dev/null
+        if [[ $? -eq 0 ]]; then
+            # we print the short hostname with ${node%%.*}
+            _print 3 "**" "Save the configuration of cluster $name_cl (via node ${node%%.*})" ; _ok
+        else
+            _print 3 "==" "Save the configuration of cluster $name_cl (via node ${node%%.*})" ; _nok
+        fi
+    else
+        _print 3 "==" "User $CONCLUSR can execute commands on node ${node%%.*}" ; _nok
+        grep -q "Account" $TMPFILE2 && _note "$(grep Account $TMPFILE2)"
+    fi
+}
+
+function _compare_files_between
+{
+    # purpose to to compare the output files of swlist, patches and state between the nodes and list differences
+    # input arg1: prefix (of input files to use); arg2: list of nodes
+    PREFIX="$1"
+    set -A NODES $2
+    typeset -i i=0 j=0 n=${#NODES[@]}
+    case $PREFIX in
+	swlist) msg="Compare the swlist output"  ;;
+	patches)msg="Compare the patches installed" ;;
+	state)  msg="Show incorrect states of installed products" ;;
+    esac
+    while [[ $i -lt $((n - 1)) ]]; do
+	# we will compare in following order:
+	# n0 n1; n0 n2; n0 n3; n0 n4; n1 n2; n1 n3; n1 n4; n2 n3; n2 n4; n3 n4
+        #_print 3 "**" "$msg between ${NODES[i]%%.*} and ${NODES[$((j+1))]%%.*}"
+	cmp -s $TMPDIR/${NODES[i]%%.*}.$PREFIX $TMPDIR/${NODES[$((j+1))]%%.*}.$PREFIX
+        if [[ $? -eq 1 ]]; then
+            _print 3 "==" "$msg between ${NODES[i]%%.*} and ${NODES[$((j+1))]%%.*}" ; _nok
+	    sdiff -s $TMPDIR/${NODES[i]%%.*}.$PREFIX $TMPDIR/${NODES[$((j+1))]%%.*}.$PREFIX
+	else
+            _print 3 "**" "$msg between ${NODES[i]%%.*} and ${NODES[$((j+1))]%%.*}" ; _ok
+	fi
+	j=$(( j + 1))
+	if [[ $j -eq $((n - 1)) ]]; then
+	    i=$(( i + 1 ))  # increment left node counter
+            j=$i            # reset right node counter (to avoid already compared nodes)
+	fi
+    done
 }
 
 ###############################################################################
@@ -714,7 +768,7 @@ _validOS
 # create the TMPDIR
 [[ -d $TMPDIR ]] && rm -rf $TMPDIR    # remove old TMPDIR
 mkdir -p $TMPDIR || _error "Could not create the temporary directory $TMPDIR"
-chmod 755 $TMPDIR
+chmod 777 $TMPDIR   # conclusr must be able to write into it
 
 ###############################################################################
 _check_continental_cluster_software
@@ -732,7 +786,7 @@ _validSG
 type $CMVIEWCONCL >/dev/null 2>&1
 if [[ $? -eq 0 ]]; then
     _print 3 "**" "Collecting output of command $CMVIEWCONCL"
-    $CMVIEWCONCL >$CCCONFIG_FILE 2>&1
+    $CMVIEWCONCL </dev/null >$CCCONFIG_FILE 2>&1   # added </dev/null to avoid hangs when run in bg
     if [[ $? -eq 0 ]]; then
         _ok
     else
@@ -826,51 +880,40 @@ else
     _print 3 "==" "Recovery Cluster [$REC_CL] has no nodes defined" ; _nok
 fi
 
+
 ###############################################################################
 # run ssh connectivity tests towards all remotes nodes for the CONCLUSR user
 # Primary nodes & when successfull grab the output of the cluster running
 
-### TODO: must become a function
 for NODE in $( echo ${PRIMARY_NODES[@]} )
 do
-    su - $CONCLUSR -c "ssh  -n -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=false -l $CONCLUSR $NODE  hostname" > $TMPFILE2 2>$TMPFILE2
-    if [[ $? -eq 0 ]]; then
-        _print 3 "**" "User $CONCLUSR can execute commands on node $NODE" ; _ok
-        # ssh works so now we can collect the output from cmviewcl -v via $CONCLUSR
-        su - $CONCLUSR -c "ssh -q -n -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=false \
-        -l $CONCLUSR $NODE /usr/sbin/cmviewcl -f line -v" > "$PRIMARY_CONF_FILE" 2>/dev/null
-        if [[ $? -eq 0 ]]; then
-            # we print the short hostname with ${NODE%%.*}
-            _print 3 "**" "Save the configuration of cluster $PRIM_CL (via node ${NODE%%.*})" ; _ok
-        else
-            _print 3 "==" "Save the configuration of cluster $PRIM_CL (via node ${NODE%%.*})" ; _nok
-        fi
-    else
-        _print 3 "==" "User $CONCLUSR can execute commands on node ${NODE%%.*}" ; _nok
-        grep -q "Account" $TMPFILE2 && _note "$(grep Account $TMPFILE2)"
-    fi
+    _ssh_test_conclusr $NODE $PRIMARY_CONF_FILE $PRIM_CL
 done
 
 # Recovery nodes & when successfull grab the output of the cluster running
 for NODE in $( echo ${RECOVERY_NODES[@]} )
 do
-    su - $CONCLUSR -c "ssh  -n -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=false -l $CONCLUSR $NODE  hostname" > $TMPFILE2 2>$TMPFILE2
-    if [[ $? -eq 0 ]]; then
-        _print 3 "**" "User $CONCLUSR can execute commands on node $NODE" ; _ok
-        # ssh works so now we can collect the output from cmviewcl -v via $CONCLUSR
-        su - $CONCLUSR -c "ssh -q -n -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=false \
-        -l $CONCLUSR $NODE /usr/sbin/cmviewcl -f line -v" > "$RECOVERY_CONF_FILE" 2>/dev/null
-        if [[ $? -eq 0 ]]; then
-            _print 3 "**" "Save the configuration of cluster $REC_CL (via node ${NODE%%.*})" ; _ok
-        else
-            _print 3 "==" "Save the configuration of cluster $REC_CL (via node ${NODE%%.*})" ; _nok
-        fi
-    else
-        _print 3 "==" "User $CONCLUSR can execute commands on node ${NODE%%.*}" ; _nok
-        grep -q "Account" $TMPFILE2 && _note "$(grep Account $TMPFILE2)"
-    fi
+    _ssh_test_conclusr $NODE $RECOVERY_CONF_FILE $REC_CL
 done
 
+###############################################################################
+# compare the swlist output of all our nodes (should al be the same)
+for NODE in $( echo ${PRIMARY_NODES[@]} ${RECOVERY_NODES[@]} )
+do
+    _print 3 "**" "Collecting swlist output from node $NODE"
+    su - $CONCLUSR -c "ssh  -n -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=false -l $CONCLUSR $NODE \
+	/usr/sbin/swlist 2>/dev/null" 2>/dev/null | rmnl | ssp > $TMPDIR/${NODE%%.*}.swlist && _ok || _nok
+    _print 3 "**" "Collecting patches from node $NODE"
+    su - $CONCLUSR -c "ssh  -n -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=false -l $CONCLUSR $NODE \
+	/usr/contrib/bin/show_patches 2>/dev/null" 2>/dev/null | grep -v -E '(\#)' | rmnl | ssp > $TMPDIR/${NODE%%.*}.patches && _ok || _nok
+    _print 3 "**" "Collecting swlist state output from node $NODE"
+    su - $CONCLUSR -c "ssh  -n -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=false -l $CONCLUSR $NODE \
+	/usr/sbin/swlist -l fileset -a state 2>/dev/null" 2>/dev/null | grep -v -E '(configured|\#)' | rmnl | ssp > $TMPDIR/${NODE%%.*}.state && _ok || _nok
+done
+
+_compare_files_between swlist "$( echo ${PRIMARY_NODES[@]} ${RECOVERY_NODES[@]} )"
+_compare_files_between patches "$( echo ${PRIMARY_NODES[@]} ${RECOVERY_NODES[@]} )"
+_compare_files_between state "$( echo ${PRIMARY_NODES[@]} ${RECOVERY_NODES[@]} )"
 
 ###############################################################################
 # Check if we have a valid cluster configuration overview of the primary site
