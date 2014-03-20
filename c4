@@ -3,6 +3,8 @@
 # License: GPLv3
 # Author: Gratien D'haese - gdhaese1 at its.jnj.com
 
+# $Id $
+
 #
 # Parameters
 #
@@ -39,7 +41,7 @@ typeset		CCCONPKG_FILE=$TMPDIR/CCCONPKG_FILE.$$
 typeset		PRIMARY_CONF_FILE=$TMPDIR/PRIMARY_CONF_FILE.$$
 typeset		RECOVERY_CONF_FILE=$TMPDIR/RECOVERY_CONF_FILE.$$
 typeset -r	SENDMAIL=/usr/lib/sendmail   # used by function GenerateHTMLMail
-typeset		mailto="gdhaese1@its.jnj.com,pmertens@its.jnj.com,lgielen1@its.jnj.com"
+typeset		mailto="DL-NCSBE-ITSGTSCMonitor3@ITS.JNJ.com"
 
 #
 # Functions
@@ -566,6 +568,14 @@ function _compare_package_of_group
 		_print 3 "**" "Package ${PACKAGENAME} is exactly the same between primary and recovery cluster" ; _ok
 	fi
 	echo
+
+	grep -q "autorun=disabled" "$TMPDIR/pkg_${PACKAGENAME}_PRIM"
+	if [[ $? -eq 0 ]]; then
+		_print 3 "==" "Package ${PACKAGENAME} setting of autorun=enabled [$PRIM_CL]" ; _nok
+	else
+		_print 3 "**" "Package ${PACKAGENAME} setting of autorun=enabled [$PRIM_CL]" ; _ok
+	fi
+
 	grep -q "initial_autorun=disabled" "$TMPDIR/pkg_${PACKAGENAME}_PRIM"
 	if [[ $? -eq 0 ]]; then
 		_print 3 "**" "Package ${PACKAGENAME} setting of initial_autorun=disabled [$PRIM_CL]" ; _ok
@@ -835,16 +845,16 @@ function TableRow
     typeset row="$1"
     columns=""
     typeset color=${2:-white}  # default background color is white
-    typeset -i c=0
+    typeset -i c=0             # counter of columns (0, 1 and 2)
 
     case "$( echo "$row" | cut -c1-3 )" in
-        "** " ) columns[0]='**'
+        "** " ) columns[0]='**'    # lines   with '**' means success
 		row=$( echo "$row" | cut -c4- )
                 ;;
-	"== " ) columns[0]="==" 
+	"== " ) columns[0]="=="    # lines   with '==' indicates a failure
                 row=$( echo "$row" | cut -c4- )
                 ;;
-	*     ) columns[0]=""  ;;
+	*     ) columns[0]=""  ;;  # other types of lines
     esac
     columns[1]=$( echo "$row" |  sed -e 's/\(.*\)\[.*/\1/' )   # the text with ** and [ ... ]
     echo "$row" | grep -q '\['
@@ -877,7 +887,13 @@ function TableRow
         	echo "  <td align=left><font size=-1>\c"
 	fi
 	str=$( echo "${columns[c]}" | sed -e 's/^[:blank:]*//;s/[:blank:]*$//' )  # remove leading/trailing spaces
-        [[ $c -eq 1 ]] && printf "<b>$str</b>" || printf "$str"
+        if [[ $c -eq 1 ]]; then
+		[[ "$color" = "white" ]] && printf "<pre style=\"font-family: Verdana;\">"
+		printf "<b>$str</b>"
+		[[ "$color" = "white" ]] && printf "</pre>"
+	else
+		printf "$str"
+	fi
         echo "</td>"
         c=$((c + 1))
     done
