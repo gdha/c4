@@ -386,15 +386,14 @@ function _compare_general_parameters
 	# compare the general cluster parameters between primary and recovery cluster
 	# input args: none
 	# output:
-	grep -v -E '(name=|^node|^package|node:|^id=|^cluster_formation_time|^coordinator|^logout)' \
-	$PRIMARY_CONF_FILE > $TMPFILE1
-	grep -v -E '(name=|^node|^package|node:|^id=|^cluster_formation_time|^coordinator|^logout)' \
-	$RECOVERY_CONF_FILE > $TMPFILE2
+	ExclStr="name=|^node|^package|node:|^id=|^cluster_formation_time|^coordinator|^logout|^configuration_data_version|incarnation"
+	grep -v -E '('${ExclStr}')' $PRIMARY_CONF_FILE > $TMPFILE1
+	grep -v -E '('${ExclStr}')' $RECOVERY_CONF_FILE > $TMPFILE2
 	cmp -s $TMPFILE1 $TMPFILE2
 	if [[ $? -eq 1 ]]; then
 		_print 3 "==" "The general cluster parameters do not match between $PRIM_CL and $REC_CL" ; _nok
 		_cmp_banner
-		sdiff -s $TMPFILE1 $TMPFILE2
+		sdiff -w 120 -s $TMPFILE1 $TMPFILE2
 	else
 		_print 3 "**" "The general cluster parameters match between $PRIM_CL and $REC_CL" ; _ok
 	fi
@@ -523,7 +522,7 @@ function _compare_node_parameters
 		if [[ $? -eq 1 ]]; then
 			_print 3 "==" "Node ${PRIMARY_NODES[$i]%%.*} differs from ${RECOVERY_NODES[$i]%%.*}" ; _nok
 			_cmp_banner
-			sdiff -s $TMPDIR/${PRIMARY_NODES[$i]%%.*} $TMPDIR/${RECOVERY_NODES[$i]%%.*}
+			sdiff -w 120 -s $TMPDIR/${PRIMARY_NODES[$i]%%.*} $TMPDIR/${RECOVERY_NODES[$i]%%.*}
 		else
 			_print 3 "**" "Node ${PRIMARY_NODES[$i]%%.*} is equal to ${RECOVERY_NODES[$i]%%.*}" ; _ok
 		fi
@@ -556,24 +555,20 @@ function _compare_package_of_group
 	grep "^package:${PACKAGENAME}" $PRIMARY_CONF_FILE  > "$TMPDIR/pkg_${PACKAGENAME}_PRIM"
 	grep "^package:${PACKAGENAME}" $RECOVERY_CONF_FILE > "$TMPDIR/pkg_${PACKAGENAME}_REC"
 
-	_filter_package_output_of "$TMPDIR/pkg_${PACKAGENAME}_PRIM" 0
-	_filter_package_output_of "$TMPDIR/pkg_${PACKAGENAME}_REC"  1
 
-	cmp -s "$TMPDIR/pkg_${PACKAGENAME}_PRIM" "$TMPDIR/pkg_${PACKAGENAME}_REC"
-	if [[ $? -eq 1 ]]; then
-		_print 3 "==" "Package ${PACKAGENAME} differs between primary and recovery cluster" ; _nok
-		_cmp_banner
-		sdiff -s "$TMPDIR/pkg_${PACKAGENAME}_PRIM" "$TMPDIR/pkg_${PACKAGENAME}_REC"
-	else
-		_print 3 "**" "Package ${PACKAGENAME} is exactly the same between primary and recovery cluster" ; _ok
-	fi
-	echo
-
-	grep -q "autorun=disabled" "$TMPDIR/pkg_${PACKAGENAME}_PRIM"
+	# first check some essentials
+	grep -q "autorun=enabled" "$TMPDIR/pkg_${PACKAGENAME}_PRIM"
 	if [[ $? -eq 0 ]]; then
-		_print 3 "==" "Package ${PACKAGENAME} setting of autorun=enabled [$PRIM_CL]" ; _nok
-	else
 		_print 3 "**" "Package ${PACKAGENAME} setting of autorun=enabled [$PRIM_CL]" ; _ok
+	else
+		_print 3 "==" "Package ${PACKAGENAME} setting of autorun=enabled [$PRIM_CL]" ; _nok
+	fi
+
+	grep -q "autorun=disabled" "$TMPDIR/pkg_${PACKAGENAME}_REC"
+	if [[ $? -eq 0 ]]; then
+		_print 3 "**" "Package ${PACKAGENAME} setting of autorun=disabled [$REC_CL]" ; _ok
+	else
+		_print 3 "==" "Package ${PACKAGENAME} setting of autorun=disabled [$REC_CL]" ; _nok
 	fi
 
 	grep -q "initial_autorun=disabled" "$TMPDIR/pkg_${PACKAGENAME}_PRIM"
@@ -582,12 +577,54 @@ function _compare_package_of_group
 	else
 		_print 3 "==" "Package ${PACKAGENAME} setting of initial_autorun=disabled [$PRIM_CL]" ; _nok
 	fi
+
 	grep -q "initial_autorun=disabled" "$TMPDIR/pkg_${PACKAGENAME}_REC"
 	if [[ $? -eq 0 ]]; then
 		_print 3 "**" "Package ${PACKAGENAME} setting of initial_autorun=disabled [$REC_CL]" ; _ok
 	else
 		_print 3 "==" "Package ${PACKAGENAME} setting of initial_autorun=disabled [$REC_CL]" ; _nok
 	fi
+
+	# package:GTSLORA1|node:gltdbdr1|switching=disabled
+	grep "switching=" "$TMPDIR/pkg_${PACKAGENAME}_PRIM" | while read LINE
+	do
+		node=$( echo $LINE | cut -d"|" -f2 | cut -d: -f2 )	# nodename
+
+		echo $LINE | grep -q "switching=enabled"
+		if [[ $? -eq 0 ]]; then
+			_print 3 "**" "Package ${PACKAGENAME} setting of switching=enabled on node $node [$PRIM_CL]" ; _ok
+		else
+			_print 3 "==" "Package ${PACKAGENAME} setting of switching=enabled on node $node [$PRIM_CL]" ; _nok
+		fi
+	done
+
+	grep "switching=" "$TMPDIR/pkg_${PACKAGENAME}_REC" | while read LINE
+	do
+		node=$( echo $LINE | cut -d"|" -f2 | cut -d: -f2 )      # nodename
+
+		echo $LINE | grep -q "switching=enabled"
+		if [[ $? -eq 0 ]]; then
+			_print 3 "**" "Package ${PACKAGENAME} setting of switching=enabled on node $node [$REC_CL]" ; _ok
+		else
+			_print 3 "==" "Package ${PACKAGENAME} setting of switching=enabled on node $node [$REC_CL]" ; _nok
+		fi
+	done
+
+	_filter_package_output_of "$TMPDIR/pkg_${PACKAGENAME}_PRIM" 0
+	_filter_package_output_of "$TMPDIR/pkg_${PACKAGENAME}_REC"  1
+
+	# do a general compare between primary/recovery cluster package group
+	cmp -s "$TMPDIR/pkg_${PACKAGENAME}_PRIM" "$TMPDIR/pkg_${PACKAGENAME}_REC"
+	if [[ $? -eq 1 ]]; then
+		_print 3 "==" "Package ${PACKAGENAME} differs between primary and recovery cluster" ; _nok
+		_cmp_banner
+		sdiff -w 120 -s "$TMPDIR/pkg_${PACKAGENAME}_PRIM" "$TMPDIR/pkg_${PACKAGENAME}_REC"
+	else
+		_print 3 "**" "Package ${PACKAGENAME} is exactly the same between primary and recovery cluster" ; _ok
+	fi
+
+
+
 }
 
 function _filter_package_output_of
@@ -598,7 +635,7 @@ function _filter_package_output_of
 	# output: pkg_${PACKAGENAME}_<PRIM|REC> file rewritten
 
 	# first we remove "package:<PACKAGENAME>|" from input stream and some keywords
-	cat $1 | cut -d'|' -f2- | grep -v -E '(^name=|^owner=|^id=|^ip_address:|^summary=)' | \
+	cat ${1} | cut -d'|' -f2- | grep -v -E '(^name=|^owner=|^id=|^ip_address:|summary=|switching=|autorun)' | \
 	grep -v -E '(last_run_time=|last_halt_time=|last_halt_failed=|status=|state=|available=|pid=|restart_limit=)' | \
 	rmnl | ssp > ${1}.new
 	mv -f ${1}.new ${1}
@@ -753,7 +790,7 @@ function _compare_files_between
 	cmp -s $TMPDIR/${NODES[i]%%.*}.$PREFIX $TMPDIR/${NODES[$((j+1))]%%.*}.$PREFIX
         if [[ $? -eq 1 ]]; then
             _print 3 "==" "$msg between ${NODES[i]%%.*} and ${NODES[$((j+1))]%%.*}" ; _nok
-	    sdiff -s $TMPDIR/${NODES[i]%%.*}.$PREFIX $TMPDIR/${NODES[$((j+1))]%%.*}.$PREFIX
+	    sdiff -w 120 -s $TMPDIR/${NODES[i]%%.*}.$PREFIX $TMPDIR/${NODES[$((j+1))]%%.*}.$PREFIX
 	else
             _print 3 "**" "$msg between ${NODES[i]%%.*} and ${NODES[$((j+1))]%%.*}" ; _ok
 	fi
@@ -847,16 +884,18 @@ function TableRow
     typeset color=${2:-white}  # default background color is white
     typeset -i c=0             # counter of columns (0, 1 and 2)
 
-    case "$( echo "$row" | cut -c1-3 )" in
-        "** " ) columns[0]='**'    # lines   with '**' means success
-		row=$( echo "$row" | cut -c4- )
+    case "$( echo "$row" | cut -c1-2 )" in
+        "**" ) columns[0]='**'    # lines   with '**' means success
+		#row=$( echo "$row" | cut -c4- )
+		row=$( echo "$row" | cut -c3- )
                 ;;
-	"== " ) columns[0]="=="    # lines   with '==' indicates a failure
-                row=$( echo "$row" | cut -c4- )
+	"==" ) columns[0]="=="    # lines   with '==' indicates a failure
+                #row=$( echo "$row" | cut -c4- )
+                row=$( echo "$row" | cut -c3- )
                 ;;
 	*     ) columns[0]=""  ;;  # other types of lines
     esac
-    columns[1]=$( echo "$row" |  sed -e 's/\(.*\)\[.*/\1/' )   # the text with ** and [ ... ]
+    columns[1]=$( echo "$row" |  sed -e 's/\(.*\)\[.*/\1/' )   # the text without ** and [ ... ]
     echo "$row" | grep -q '\['
     if [[ $? -eq 0 ]]; then
         columns[2]=$( echo "$row" | sed -e 's/.*\(\[.*\]\)/\1/' )  # contains [  OK  ]
@@ -864,7 +903,7 @@ function TableRow
         columns[2]=""
     fi
     # set the colors correct
-    case "$( echo "${columns[2]}" | sed -e 's/\[//;s/\]//' -e 's/ //g' )" in
+    case "$( echo "${columns[2]}" | sed -e 's/\[//;s/\]//' -e 's/ //g' -e 's/\&nbsp;//g' )" in
 	"OK")		color="#00CA00" ;;	# greenish
 	"FAILED")	color="#FF0000" ;;	# redish
 	"WARN")
@@ -886,9 +925,10 @@ function TableRow
 	else
         	echo "  <td align=left><font size=-1>\c"
 	fi
-	str=$( echo "${columns[c]}" | sed -e 's/^[:blank:]*//;s/[:blank:]*$//' )  # remove leading/trailing spaces
+	#str=$( echo "${columns[c]}" | sed -e 's/^[:blank:]*//;s/[:blank:]*$//' )  # remove leading/trailing spaces
+	str="${columns[c]}"
         if [[ $c -eq 1 ]]; then
-		[[ "$color" = "white" ]] && printf "<pre style=\"font-family: Verdana;\">"
+		[[ "$color" = "white" ]] && printf "<pre style=\"font-family: Courier-New;\">"  #was Verdana
 		printf "<b>$str</b>"
 		[[ "$color" = "white" ]] && printf "</pre>"
 	else
@@ -900,6 +940,12 @@ function TableRow
     echo "</tr>"
 }
 
+function str_replace
+{
+    # input: $1:LINE; $2:character; $:new-character
+    echo "$1" | sed -e 's/'"$2"'/'"$3"'/g'
+}
+
 function GenerateHTMLMail
 {
     # input parameter (string of text) is used for subject line
@@ -909,7 +955,8 @@ function GenerateHTMLMail
     CreateTable
     cat $LOGFILE | while read LINE
     do
-        TableRow "$LINE"
+        #TableRow "$LINE"
+        TableRow "$( str_replace "$LINE" " " "\&nbsp;" )"
     done
     EndTable
     EndOfHtmlDocument
