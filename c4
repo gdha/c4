@@ -419,7 +419,7 @@ function _compare_node_parameters
 	do
 		# grep only lines starting with "node" and $(hostname) and remove "node:$(hostname)|" too
 		grep "^node" $PRIMARY_CONF_FILE | grep ${NODE%%.*} | cut -d'|' -f2- | \
-		grep -v -E '(node_pr_key|boot_timestamp|mac_address)' > $TMPDIR/${NODE%%.*}
+		grep -v -E '(node_pr_key|boot_timestamp|mac_address|id=)' > $TMPDIR/${NODE%%.*}
 		# to be able to compare we have to remove (or change) the subnets of the node, e.g. subnet 10.0.208 vs. 10.0.210
 		grep ip_address $TMPDIR/${NODE%%.*} | while read LINE
 		do
@@ -448,7 +448,7 @@ function _compare_node_parameters
 	do
 		# grep only lines starting with "node" and $(hostname) and remove "node:$(hostname)|" too
 		grep "^node" $RECOVERY_CONF_FILE | grep ${NODE%%.*} | cut -d'|' -f2- | \
-		grep -v -E '(node_pr_key|boot_timestamp|mac_address)' > $TMPDIR/${NODE%%.*}
+		grep -v -E '(node_pr_key|boot_timestamp|mac_address|id=)' > $TMPDIR/${NODE%%.*}
 		grep ip_address $TMPDIR/${NODE%%.*} | while read LINE
 		do
 			echo $LINE | grep -q "name=" && {
@@ -478,7 +478,13 @@ function _compare_node_parameters
 	do
 		for NODE in $( echo ${PRIMARY_NODES[@]} )
 		do
-			IP_HP=$(( $(_ip2num ${PRIM_IP[i]}) - $(_ip2num ${PRIM_SN[i]}) ))
+			echo "${PRIM_IP[i]}" | grep -q "192.168"
+			if [[ $? -eq 0 ]]; then
+			    # heartbeat IP address - set host part to 0
+			    IP_HP=0
+			else
+			    IP_HP=$(( $(_ip2num ${PRIM_IP[i]}) - $(_ip2num ${PRIM_SN[i]}) ))
+			fi
 			SN_HP=$(( $(_ip2num ${PRIM_SN[i]}) - $(_ip2num ${PRIM_SN[i]}) ))    # should always be 0
 			NM_HP=$(( $(_ip2num ${PRIM_NM[i]}) - $(_ip2num ${PRIM_NM[i]}) ))    # should always be 0
 			GW_HP=$(( $(_ip2num ${PRIM_GW}) - $(_ip2num ${PRIM_SN[i]}) ))
@@ -495,7 +501,16 @@ function _compare_node_parameters
 	do
 		for NODE in $( echo ${RECOVERY_NODES[@]} )
 		do
-			IP_HP=$(( $(_ip2num ${REC_IP[i]}) - $(_ip2num ${REC_SN[i]}) ))
+			# we need to add some wizard trick here for heartbeat networks (each interface has its own
+			# unique address (192.168.x.y vs. 192.168.x.z) which makes them always different
+			# Therefore, when we detect an subnet containing 192.168.x we copy PRIM_IP into REC_IP
+			echo "${REC_IP[i]}" | grep -q "192.168"
+			if [[ $? -eq 0 ]]; then
+			    # heartbeat IP address - set host part to 0
+			    IP_HP=0
+			else
+			    IP_HP=$(( $(_ip2num ${REC_IP[i]}) - $(_ip2num ${REC_SN[i]}) ))
+			fi
 			SN_HP=$(( $(_ip2num ${REC_SN[i]}) - $(_ip2num ${REC_SN[i]}) ))    # should always be 0
 			NM_HP=$(( $(_ip2num ${REC_NM[i]}) - $(_ip2num ${REC_NM[i]}) ))    # should always be 0
 			GW_HP=$(( $(_ip2num ${REC_GW}) - $(_ip2num ${REC_SN[i]}) ))
@@ -512,7 +527,8 @@ function _compare_node_parameters
 	for NODE in $( echo ${PRIMARY_NODES[@]} ${RECOVERY_NODES[@]} )
 	do
 		sed -e "/^name=/d" < $TMPDIR/${NODE%%.*} >$TMPDIR/${NODE%%.*}-tmp
-		mv $TMPDIR/${NODE%%.*}-tmp $TMPDIR/${NODE%%.*}
+		##mv $TMPDIR/${NODE%%.*}-tmp $TMPDIR/${NODE%%.*}
+		cat $TMPDIR/${NODE%%.*}-tmp | grep -v "_net=" | rmnl | ssp | sort > $TMPDIR/${NODE%%.*}
 	done
 	# now we have to compare node per equivalent node between primary and recovery cluster
 	i=0     # the first node name in array
@@ -520,7 +536,7 @@ function _compare_node_parameters
 	do
 		cmp -s $TMPDIR/${PRIMARY_NODES[$i]%%.*} $TMPDIR/${RECOVERY_NODES[$i]%%.*}
 		if [[ $? -eq 1 ]]; then
-			_print 3 "==" "Node ${PRIMARY_NODES[$i]%%.*} differs from ${RECOVERY_NODES[$i]%%.*}" ; _nok
+			_print 3 "==" "Node ${PRIMARY_NODES[$i]%%.*} differs from ${RECOVERY_NODES[$i]%%.*}" ; _warn
 			_cmp_banner
 			sdiff -w 120 -s $TMPDIR/${PRIMARY_NODES[$i]%%.*} $TMPDIR/${RECOVERY_NODES[$i]%%.*}
 		else
@@ -541,6 +557,7 @@ function _compare_package_of_group
 	GROUP="$1"
 	# give the file a prefix "group_" as group name can be anything
 	_find_and_print_x_lines "$GROUP" 5 $CCCONFIG_FILE > "$TMPDIR/group_$GROUP"
+	echo "\n"
 	_line "*"
 	_note "Start analyzing package recovery group \"$GROUP\""
 	_line "*"
@@ -616,7 +633,7 @@ function _compare_package_of_group
 	# do a general compare between primary/recovery cluster package group
 	cmp -s "$TMPDIR/pkg_${PACKAGENAME}_PRIM" "$TMPDIR/pkg_${PACKAGENAME}_REC"
 	if [[ $? -eq 1 ]]; then
-		_print 3 "==" "Package ${PACKAGENAME} differs between primary and recovery cluster" ; _nok
+		_print 3 "==" "Package ${PACKAGENAME} differs between primary and recovery cluster" ; _warn
 		_cmp_banner
 		sdiff -w 120 -s "$TMPDIR/pkg_${PACKAGENAME}_PRIM" "$TMPDIR/pkg_${PACKAGENAME}_REC"
 	else
@@ -745,7 +762,7 @@ function _cleanup_tmp_files
 {
 	rm -f $TMPFILE1 $CCCONPKG_FILE $TMPFILE2 $CCCONFIG_FILE
 	rm -f /tmp/_check_nslookup_address.txt
-	##gdha##rm -rf $TMPDIR
+	rm -rf $TMPDIR
 }
 
 function _ssh_test_conclusr
